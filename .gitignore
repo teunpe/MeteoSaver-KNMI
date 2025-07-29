@@ -11,6 +11,8 @@ data/
 *.txt
 *.in
 *.png
+*.jpg
+*.Identifier
 .gitignore
 results
 
