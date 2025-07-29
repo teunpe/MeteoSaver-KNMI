@@ -21,7 +21,75 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from sklearn.cluster import DBSCAN
 from datetime import datetime
 from calendar import monthrange
+from tqdm.auto import tqdm
 
+# def organize_contours_midpoint(contours, max_rows):
+#     '''
+#     # Organizes the bounding boxes, here termed as contours, in rows by their center co-ordinates using the KMeans clustering
+
+#     Parameters
+#     --------------
+#     contours: list of bounding boxes (with their x, y, w, h coordinates)
+#         List of contours for the detected text in the table cells with coordinates
+
+#     max_rows: int
+#         Maximum rows, adjusted based on your table's expected structure
+
+#     Returns
+#     -------------- 
+#     rows: Bounding boxes organised in rows using Kmeans clustering
+
+#     '''
+
+#     midpoints = [(cv2.boundingRect(contour)[1] + cv2.boundingRect(contour)[3] // 2) for contour in contours]
+#     if len(midpoints) == 0:
+#         return []
+#     kmeans = KMeans(n_clusters=min(max_rows, len(midpoints)), random_state=0)
+#     kmeans.fit(np.array(midpoints).reshape(-1, 1))
+#     labels = kmeans.labels_
+#     rows = [[] for _ in range(max_rows)]
+#     for label, contour in zip(labels, contours):
+#         rows[label].append(contour)
+#     for i in range(len(rows)):
+#         rows[i] = sorted(rows[i], key=lambda c: cv2.boundingRect(c)[0])
+#     return rows
+
+
+# def organize_contours_top(contours, max_rows):
+#     '''
+#     # Organizes the bounding boxes, here termed as contours, in rows by their top co-ordinates using the KMeans clustering
+
+#     Parameters
+#     --------------
+#     contours: list of bounding boxes (with their x, y, w, h coordinates)
+#         List of contours for the detected text in the table cells with coordinates
+
+#     max_rows: int
+#         Maximum rows, adjusted based on your table's expected structure
+
+#     Returns
+#     -------------- 
+#     rows: Bounding boxes organised in rows using Kmeans clustering
+
+#     '''
+
+#     # Top for vertical clustering
+#     top = [cv2.boundingRect(contour)[1] for contour in contours]
+#     if len(top) == 0:
+#         return []
+
+#     kmeans = KMeans(n_clusters=min(max_rows, len(top)), random_state=0)
+#     kmeans.fit(np.array(top).reshape(-1, 1))
+#     labels = kmeans.labels_
+
+#     rows = [[] for _ in range(max_rows)]
+#     for label, contour in zip(labels, contours):
+#         rows[label].append(contour)
+
+#     for i in range(len(rows)):
+#         rows[i] = sorted(rows[i], key=lambda c: cv2.boundingRect(c)[0])
+
+#     return rows
 
 def get_max_rows_from_filename(filename):
     """ Extract year and month from filename and determine max rows. """
@@ -818,9 +886,7 @@ def transcription(detected_table_cells, ocr_model, tesseract_path, transient_tra
             if row is not None:  # Skip None values to avoid errors
                 row.sort(key=lambda c: cv2.boundingRect(c)[1])
 
-        # Dictionary to track assigned columns per row
-        assigned_columns_per_row = {}
-        for row_index, row in enumerate(sorted_rows, start=1):
+        for row_index, row in tqdm(enumerate(sorted_rows, start=1)):
             if row is None:
                 continue  # Skip processing for empty rows
             
@@ -1017,9 +1083,9 @@ def transcription(detected_table_cells, ocr_model, tesseract_path, transient_tra
         ws.insert_rows(1, amount = 3)
 
         # Define your headers (adjust as needed)
-        headers = ["No de la pentade", "Date", "Bellani (gr. Cal/cm2) 6-6h", "Températures extrêmes", "", "", "", "", "Evaportation en cm3 6 - 6h", "", "Pluies en mm. 6-6h", "Température et Humidité de l'air à 6 heures", "", "", "", "", "Température et Humidité de l'air à 15 heures",  "", "", "", "", "Température et Humidité de l'air à 18 heures",  "", "", "", "", "Date"]
-        sub_headers_1 = ["", "", "", "Abri", "", "", "", "", "Piche", "", "", "(Psychromètre a aspiration)", "", "", "", "", "(Psychromètre a aspiration)", "", "", "", "", "(Psychromètre a aspiration)", "", "", "", ""]
-        sub_headers_2 =["", "", "", "Max.", "Min.", "(M+m)/2", "Ampl.", "Min. gazon", "Abri.", "Ext.", "", "T", "T'a", "e.", "U", "∆e", "T", "T'a", "e.", "U", "∆e","T", "T'a", "e.", "U", "∆e", ""]
+        headers =       ["", "Date", "Luchtdruk", "",   "",   "Temperatuur", "",    "",      "",    "",      "",    "",          "",        "",        "Dampdrukking", "",   "",   "Vochtigheid", "",   "",   "Wind", "",   "",   "",   "",   "",  "Bewolking", "",   "",   "",    "Neerslag",   "",         "",          "",]
+        sub_headers_1 = ["", "",     "8a",        "2p", "6p", "8a",          "",    "2p",    "",    "6p",    "",    "Som droog", "Maximum", "Minimum", "8a",           "2p", "6p", "8a",          "2p", "6p", "8a",   "",   "2p", "",   "6p", "",  "8a",        "2p", "6p", "Som", "Oranjestad", "Bengalen", "Zeelandia", "Farm"]
+        sub_headers_2 = ["", "",     "",          "",   "",   "Droog",       "Nat", "Droog", "Nat", "Droog", "Nat", "",          "",        "",        "",             "",   "",   "",            "",   "",   "Ri",   "Kr", "Ri", "Kr", "Ri", "Kr" "",          "",   "",   "",    "",           "",         "",          "",]
 
         # Add the headers to the first row
         for col_num, header in enumerate(headers, start=1):
@@ -1055,7 +1121,10 @@ def transcription(detected_table_cells, ocr_model, tesseract_path, transient_tra
 
 
         # Label Date, Total and Average rows
-        row_labels = ["1","2", "3", "4", "5", "Tot.", "Moy.", "6", "7", "8", "9", "10", "Tot.", "Moy.", "11", "12", "13", "14", "15", "Tot.", "Moy.", "16", "17", "18", "19", "20", "Tot.", "Moy.", "21", "22", "23", "24", "25", "Tot.", "Moy.", "26", "27", "28", "29", "30", "31", "Tot.", "Moy.", "Tot.", "Moy."]
+        row_labels = ["1","2", "3", "4", "5", "6", "7", "8", "9", "10", "Som.", 
+                      "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "Som.", 
+                      "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", 
+                      "Som.", "Gem.", "Som tot.", "Gem tot."]
         # Update the cells in the second and last column with the date values
         columns = [2, 27]
         for col in columns:
