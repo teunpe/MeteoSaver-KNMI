@@ -115,7 +115,7 @@ def get_max_rows_from_filename(filename):
         return 43  # Default to the max value (31 days)
 
 
-def organize_contours_midpoint(contours, filename):
+def organize_contours_midpoint(contours, filename, max_rows=None):
     """
     Organizes contours into `max_rows` using **midpoint clustering**, ensuring:
     - The row median is calculated using only the **50% closest** boxes.
@@ -146,7 +146,8 @@ def organize_contours_midpoint(contours, filename):
     midpoints = np.array([cv2.boundingRect(c)[1] + cv2.boundingRect(c)[3] // 2 for c in contours]).reshape(-1, 1)
 
     # Step 2: Perform K-Means clustering on midpoints
-    max_rows = get_max_rows_from_filename(filename)
+    if max_rows is None:
+        max_rows = get_max_rows_from_filename(filename)
     kmeans = KMeans(n_clusters=min(max_rows, len(midpoints)), random_state=0, n_init=50, tol=1e-2)
     kmeans.fit(midpoints)
     labels = kmeans.labels_
@@ -206,7 +207,7 @@ def organize_contours_midpoint(contours, filename):
     return sorted_rows
 
 
-def organize_contours_top(contours, filename):
+def organize_contours_top(contours, filename, max_rows=None):
     """
     Organizes contours into `max_rows` using **top edge clustering**, ensuring:
     - The row median is calculated using only the **50% closest** boxes.
@@ -237,7 +238,8 @@ def organize_contours_top(contours, filename):
     top_edges = np.array([cv2.boundingRect(c)[1] for c in contours]).reshape(-1, 1)
 
     # Step 2: Perform K-Means clustering on top edges
-    max_rows = get_max_rows_from_filename(filename)
+    if max_rows is None:
+        max_rows = get_max_rows_from_filename(filename)
     kmeans = KMeans(n_clusters=min(max_rows, len(top_edges)), random_state=0, n_init=50, tol=1e-2)
     kmeans.fit(top_edges)
     labels = kmeans.labels_
@@ -438,7 +440,7 @@ def generate_random_colors(n):
     return colors
 
 
-def draw_row_markers_and_boxes(image, rows, colors):
+def draw_row_markers_and_boxes(image, rows, colors, horizontal_expansion=0.07, vertical_expansion=0.35):
     '''
     Draws bounding boxes around contours in each row and adds numbered markers to each row with distinct colors.
     Ensures numbering is continuous (1 to 43), even for None rows.
@@ -446,7 +448,7 @@ def draw_row_markers_and_boxes(image, rows, colors):
 
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.5
-    thickness = 1
+    thickness = 2
 
     for idx in range(len(rows)):  # Iterate over full 43-row structure
         row = rows[idx]  # Get row (can be None)
@@ -466,8 +468,8 @@ def draw_row_markers_and_boxes(image, rows, colors):
             x, y, w, h = cv2.boundingRect(contour)
 
             # Define increase factors for bounding box modification
-            increase_factor_width = 0.07  # 
-            increase_factor_height = 0.35  # 
+            increase_factor_width = horizontal_expansion #0.07  # 
+            increase_factor_height = vertical_expansion #0.35  # 
 
             # Expand width while keeping it centered
             new_w = int(w * (1 + increase_factor_width))  # Increase width
