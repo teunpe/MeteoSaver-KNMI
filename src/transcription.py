@@ -449,12 +449,14 @@ def draw_row_markers_and_boxes(image, rows, colors, horizontal_expansion=0.07, v
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.5
     thickness = 2
+    image_height = image.shape[0]
+    y_step = (image_height) // len(rows)
 
     for idx in range(len(rows)):  # Iterate over full 43-row structure
         row = rows[idx]  # Get row (can be None)
         color = colors[idx % len(colors)]  # Cycle through colors if needed
 
-        y_position = 50 + (idx * 62)  # Approximate vertical position based on row index
+        y_position = 50 + (idx * y_step)  # Approximate vertical position based on row index
         x_position = 10  # Arbitrary x position for marker
 
         # Always number rows, even if None
