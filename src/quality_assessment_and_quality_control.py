@@ -10,6 +10,7 @@ import pandas as pd
 from statistics import mean
 import re
 import numpy as np
+import zipfile
 
 # Setting up the current working directory; for both the input and output folders
 cwd = os.getcwd()
@@ -873,6 +874,9 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     ## Additional checks for Dry bulb temperature (T), Wet bulb temperature (T'a), Actual Vapour pressure (e), Relative Humidity (U), and delta e 
     # Iterate over each row in the worksheet after header rows
     for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row):
+        if row[0].row in excluded_rows:
+            continue 
+        
         for i in range(0, len(dry_and_wet_bulb_temperature_columns), 2):
             dry_col = dry_and_wet_bulb_temperature_columns[i]
             wet_col = dry_and_wet_bulb_temperature_columns[i+1]
@@ -936,7 +940,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
                 T = float(dry_cell.value)
                 Ta = float(wet_cell.value)
 
-                if not is_highlighted(ea_cell, 'FF6DCD57') or not is_highlighted(delta_e_cell, 'FF6DCD57') or not is_highlighted(U_cell, 'FF6DCD57'):
+                if T >= Ta and (not is_highlighted(ea_cell, 'FF6DCD57') or not is_highlighted(delta_e_cell, 'FF6DCD57') or not is_highlighted(U_cell, 'FF6DCD57')):
                     # Calculate actual vapour pressure (ea) from Ta (wet bulb)
                     calculated_ea = 6.112 * np.exp((17.67 * Ta) / (Ta + 243.5))
                     # Update and highlight
@@ -1457,27 +1461,22 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
 
 
     # === FINAL STEP: Export confirmed green cells to text files === This will be important for further training (continous learning of handwritting styles) of the OCR
-    roi_save_dir = os.path.join(transient_transcription_output_dir_station, 'clipped_cells')
-    os.makedirs(roi_save_dir, exist_ok=True)
+    # Define zip path (same one used for clipped cell ROIs)
+    zip_path = os.path.join(transient_transcription_output_dir, station, f"{station}_clipped_cells.zip")
+    os.makedirs(os.path.dirname(zip_path), exist_ok=True)
 
-    for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row):
-        for cell in row:
-            # Check if the cell is green-highlighted (confirmed)
-            if is_highlighted(cell, 'FF6DCD57') and is_string_convertible_to_float(cell.value):
-                # Get Excel-style cell reference (e.g., D4)
-                col_letter = openpyxl.utils.get_column_letter(cell.column)
-                cell_ref = f"{col_letter}{cell.row}"
+    with zipfile.ZipFile(zip_path, 'a', compression=zipfile.ZIP_DEFLATED) as roi_zip:
+        for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row):
+            for cell in row:
+                if is_highlighted(cell, 'FF6DCD57') and is_string_convertible_to_float(cell.value):
+                    # Get Excel-style cell reference (e.g., D4)
+                    col_letter = openpyxl.utils.get_column_letter(cell.column)
+                    cell_ref = f"{col_letter}{cell.row}"
+                    clean_val = str(cell.value).replace('.', '')
 
-                # Construct filename
-                txt_filename = f"{month_filename}_{cell_ref}.txt"
-                txt_save_path = os.path.join(roi_save_dir, txt_filename)
+                    txt_filename = f"{month_filename}_{cell_ref}.txt"
 
-                # Remove decimal point (no rounding). This is because in the original transcription, decimal points were not transcribed (to reduce the noise on the sheets from dotted lines and poor maintenance conditions)
-                clean_val = str(cell.value).replace('.', '')
-
-                # Save to text file
-                with open(txt_save_path, 'w', encoding='utf-8') as f:
-                    f.write(clean_val)
+                    roi_zip.writestr(txt_filename, clean_val)
     
     # Save final changes
     new_workbook.save(new_version_of_file)    
