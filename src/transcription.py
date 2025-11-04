@@ -21,11 +21,8 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from sklearn.cluster import DBSCAN
 from datetime import datetime
 from calendar import monthrange
-<<<<<<< HEAD
 from tqdm.auto import tqdm
-=======
 import zipfile
->>>>>>> origin/version-1.1_including_precip_and_dry_and_wet_bulb_temp
 
 # def organize_contours_midpoint(contours, max_rows):
 #     '''
@@ -1021,14 +1018,7 @@ def transcription(detected_table_cells, ocr_model, tesseract_path, transient_tra
                         cell_ref = calculate_cell_reference(x, w, row_index, assigned_columns_per_row, max_columns=24, table_width=image_width) # e.g., A1, B5, etc.
                         
                         # Place the OCR/HTR recognized text in its respective Ms Excel cell 
-<<<<<<< HEAD
-                        ws[cell_ref].value = ocr_result.strip()  # Remove leading/trailing whitespace  
-
-                        # # Restore the row index to the initial value
-                        # row_index = initial_row_index
-=======
                         ws[cell_ref].value = ocr_result.strip()  # Remove leading/trailing whitespace   
->>>>>>> origin/version-1.1_including_precip_and_dry_and_wet_bulb_temp
 
                         # Set up border styles for excel output
                         thin_border = Border(
