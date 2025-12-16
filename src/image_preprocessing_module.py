@@ -3,7 +3,7 @@ import os, argparse, glob, tempfile, shutil, warnings
 import cv2
 import matplotlib.pyplot as plt
 
-def image_preprocessing(image_path):
+def image_preprocessing(image_path: str):
     '''
     Performs image pre-processing by converting a colored image to grayscale and binarizing it by applying adaptive thresholding.
 

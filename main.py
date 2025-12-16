@@ -22,6 +22,7 @@ from src_knmi.table_and_cell_detection_model_knmi import table_and_cell_detectio
 
 def main(file_path: str):
 
+    # Set up logging
     filename = os.path.splitext(os.path.basename(file_path))[0]
     country, year, image = filename.split('_')[0], filename.split('_')[1], filename.split('_')[2]
 
@@ -67,10 +68,12 @@ def main(file_path: str):
     all_stations = [folder for folder in os.listdir(full_datadir) 
                     if os.path.isdir(os.path.join(full_datadir, folder))]
     
+    # Set up configuations for a specific station
     station = 'knmi'
     pre_QA_QC_transcribed_hydroclimate_data_dir_station = os.path.join(pre_QA_QC_transcribed_hydroclimate_data_dir, station)
     month_filename = file_path
     
+    # Check if saved detection pickle file exists
     if os.path.exists(os.path.join(f"saved_detections/{station}_{month_filename.split('/')[-1].replace('.jpg', '')}_detected_table_and_cells.pkl")):
         with open(os.path.join(f"saved_detections/{station}_{month_filename.split('/')[-1].replace('.jpg', '')}_detected_table_and_cells.pkl"), 'rb') as f:
             detected_table_and_cells = pickle.load(f)
@@ -105,7 +108,8 @@ def main(file_path: str):
             config.read(conf_file)
             no_of_rows = config.getint('Cell_detection', 'no_of_rows')
         no_of_columns = config.getint('Cell_detection', 'no_of_columns')
-        img_path = f'/home/teun/knmi/data-rescue-internship-teun/data/jpg/{country}/{year}/{file_path}'
+        # img_path = f'/home/teun/knmi/data-rescue-internship-teun/data/jpg/{country}/{year}/{file_path}'
+        img_path = f'data/00_knmi_images/testset/{country}_{year}_{image}.jpg'
         img = read_img(img_path)
         config.read(conf_file)
         blocksize = config.getint('Table_detection', 'blocksize')
@@ -121,11 +125,13 @@ def main(file_path: str):
         max_cell_height_threshold = config.getint('Cell_detection', 'max_cell_height')
         no_of_columns = config.getint('Cell_detection', 'no_of_columns')
 
+        # Binarize and deskew image
         image_in_grayscale, binarized_image, original_image = image_preprocessing(img, blocksize=blocksize, C=6, skew=True)
 
+        # Detect table based on reference word location
         size = (table_width, table_height)
         table_offset=(table_x_offset, table_y_offset)
-        initial_offset=(1000, 500)
+        initial_offset=(1000, 500) # Remove left and top part of the image to search for the reference word
         reference_word=reference_word
         x, y, w, h, df = table_detection(binarized_image, reference_word=reference_word, size=size, 
                                         initial_offset=initial_offset, table_offset=table_offset)
@@ -199,17 +205,24 @@ def main(file_path: str):
     print(f'Duration of transcribing: {end_time - start_time}')
 
 if __name__ == "__main__":
-    for country in ['st-eustatius', 'curacao']:
-        for year in tqdm([1912, 1913, 1914, 1915, 1916, 1917, 1918], desc='Years'):
-            for image in tqdm(np.arange(2,24,2), desc='Images'):
-                # if country == 'st-eustatius' and image == 12:
-                #     continue
-                if os.path.exists(f'results/05_transient_transcription_output/knmi/full_table_{country}_{year}_{image:04d}.jpg.jpg'):
-                    print(f'Skipping {country} {year} image {image:04d}, already exists...')
-                    continue
-                print(f'Processing {country} {year} image {image:04d}...')
-                try:
-                    main(f'{country}_{year}_{image:04d}.jpg')
-                except Exception as e:
-                    print(e)
-                    continue
+    # for country in ['st-eustatius', 'curacao']:
+    #     for year in tqdm([1911], desc='Years'):
+    #         for image in tqdm(np.arange(2,24,2), desc='Images'):
+    #             # if country == 'st-eustatius' and image == 12:
+    #             #     continue
+    #             if os.path.exists(f'results/05_transient_transcription_output/knmi/full_table_{country}_{year}_{image:04d}.jpg.jpg'):
+    #                 print(f'Skipping {country} {year} image {image:04d}, already exists...')
+    #                 continue
+    #             print(f'Processing {country} {year} image {image:04d}...')
+    #             try:
+    #                 main(f'{country}_{year}_{image:04d}.jpg')
+    #             except Exception as e:
+    #                 print(e)
+    #                 continue
+    for filename in tqdm(glob.glob('data/00_knmi_images/testset/*.jpg'), desc='Processing images'):
+        print(f'Processing {filename}...')
+        try:
+            main(filename)
+        except Exception as e:
+            print(e)
+            continue

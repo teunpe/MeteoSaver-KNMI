@@ -14,6 +14,7 @@ from openpyxl.styles import Border, Side, Alignment
 import openpyxl
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+import logging
 
 
 import gc
@@ -22,6 +23,8 @@ import psutil
 import tracemalloc
 
 proc = psutil.Process(os.getpid())
+logger = logging.getLogger('meteosaver')
+
 def log_mem(tag):
     rss = proc.memory_info().rss / 1024**2
     try:
@@ -35,243 +38,7 @@ def log_mem(tag):
 tracemalloc.start()
 
 
-def organize_columns(contours, filename, max_cols=None):
-    if not contours:
-        return []
 
-    # Step 1: Extract **left edge x-coordinates** for clustering
-    left_edges = np.array([cv2.boundingRect(c)[0] for c in contours]).reshape(-1, 1)
-    
-    # Step 2: Perform K-Means clustering on top edges
-    if max_cols is None:
-        return []
-        # max_cols = get_max_cols_from_filename(filename)
-    kmeans = KMeans(n_clusters=min(max_cols, len(left_edges)), random_state=0, n_init=50, tol=1e-2)
-    kmeans.fit(left_edges)
-    labels = kmeans.labels_
-
-    # Step 3: Assign contours to rows based on clustering
-    col_dict = {i: [] for i in range(max_cols)}
-    for label, contour in zip(labels, contours):
-        col_dict[label].append(contour)
-
-    # Step 4: Compute **super strict col medians** using only the closest 50%
-    col_medians = {}
-
-    for i, col in col_dict.items():
-        if len(col) > 2:
-            x_lefts = np.array([cv2.boundingRect(c)[0] for c in col])
-            x_lefts.sort()
-
-            # Keep **only the middle 50% closest values**
-            trimmed_x_lefts = x_lefts[len(x_lefts) // 4 : 3 * len(x_lefts) // 4]
-
-            # Compute median of the **trimmed** values
-            col_medians[i] = np.median(trimmed_x_lefts)
-        else:
-            col_medians[i] = np.median([cv2.boundingRect(c)[0] for c in col])
-
-    # Step 5: Move misplaced boxes to the best col
-    adjusted_cols = {i: [] for i in range(max_cols)}
-
-    for i, col in col_dict.items():
-        for box in col:
-            x_left = cv2.boundingRect(box)[0]  # **Left edge x-coordinate**
-
-            # Find closest **trusted** col median (ignoring outliers)
-            closest_col = i
-            min_distance = abs(x_left - col_medians[0])
-
-            if i > 0:  # Check col to the left
-                distance_left = abs(x_left - col_medians[i-1])
-                if distance_left < min_distance:
-                    min_distance = distance_left
-                    closest_col = i-1
-
-            if i < max_cols - 1:  # Check col to the right
-                distance_right = abs(x_left - col_medians[i+1])
-                if distance_right < min_distance:
-                    closest_col = i+1
-
-            adjusted_cols[closest_col].append(box)
-
-    # Step 6: Sort each adjusted col again (top to bottom)
-    for i in range(len(adjusted_cols)):
-        adjusted_cols[i] = sorted(adjusted_cols[i], key=lambda c: cv2.boundingRect(c)[1])
-
-    # Convert to final sorted list
-    sorted_cols = [adjusted_cols[i] for i in range(max_cols)]
-
-    return sorted_cols
-
-def remove_small_cells_in_column(sorted_columns):
-    for col in sorted_columns:
-        if not col:
-            continue
-
-        heights = [cv2.boundingRect(c)[3] for c in col]
-        median_height = np.median(heights)
-
-        widths = [cv2.boundingRect(c)[2] for c in col]
-        median_width = np.median(widths)
-
-        # print(cv2.boundingRect(col[0]))
-        filtered_col = [c for c in col if cv2.boundingRect(c)[3] >= 0.2 * median_height and cv2.boundingRect(c)[2] >= 0.6 * median_width]
-        # print(f'Removed {len(col) - len(filtered_col)} small cells from a column of {len(col)} cells.')
-        col.clear()
-        col.extend(filtered_col)
-    return sorted_columns
-
-def add_missing_boxes(sorted_rows, max_cell_width_threshold=130, max_cell_height_threshold=50, max_columns=24):
-    updated_rows = []
-
-    for row in sorted_rows:
-        if any(cell is None for cell in row):
-            continue
-
-        bounding_boxes = [cv2.boundingRect(c) for c in row]
-        bounding_boxes.sort(key=lambda b: b[0])
-
-        new_boxes = bounding_boxes.copy()
-        gaps = []
-
-        # Handle missing boxes at the start of the row
-        if new_boxes and new_boxes[0][0] > max_cell_width_threshold:
-            first_x, first_y, first_w, first_h = new_boxes[0]
-            num_missing_boxes = min(int(first_x // max_cell_width_threshold), max_columns - len(new_boxes))
-            new_boxes_at_start = []
-            for i in range(num_missing_boxes):
-                new_x = max(0, first_x - (num_missing_boxes - i) * max_cell_width_threshold*1.1)
-                # print(f'x: {first_x}, missing: {num_missing_boxes}, i: {i}, threshold: {max_cell_width_threshold}')
-                # print(new_x)
-                new_box = (new_x, first_y, max_cell_width_threshold, max_cell_height_threshold)
-                new_boxes_at_start.append(new_box)
-
-            new_boxes = new_boxes_at_start + new_boxes
-
-        for i in range(len(new_boxes) - 1):
-            x1, y1, w1, h1 = new_boxes[i]
-            x2, _, _, _ = new_boxes[i + 1]
-            gap = x2 - (x1 + w1)
-
-            if gap > max_cell_width_threshold*0.9:
-                gaps.append((gap, i, x1 + w1, y1))
-
-        gaps.sort(reverse=True, key=lambda g: g[0])
-
-        for gap, i, gap_start_x, y1 in gaps:
-            if len(new_boxes) >= max_columns:
-                break
-
-            num_missing_boxes = min(int(gap // max_cell_width_threshold), max_columns - len(new_boxes))
-            if num_missing_boxes > 0:
-                
-                total_box_width = num_missing_boxes * max_cell_width_threshold
-                # start_x = gap_start_x + (gap - total_box_width) / 2
-
-                # new_boxes_in_gap = []
-                # for j in range(num_missing_boxes):
-                #     new_x = start_x + j * max_cell_width_threshold
-                #     new_box = (int(new_x), y1, max_cell_width_threshold, max_cell_height_threshold)
-                #     new_boxes_in_gap.append(new_box)
-                
-                # Dynamically compute width so that all boxes fit perfectly into the gap
-                dynamic_cell_width = gap / (num_missing_boxes)
-                # print(dynamic_cell_width, gap, num_missing_boxes)
-                new_boxes_in_gap = []
-                for j in range(num_missing_boxes):
-                    if len(new_boxes) + len(new_boxes_in_gap) >= max_columns:
-                        break
-
-                    center_x = gap_start_x + (j+1) * dynamic_cell_width
-                    new_x = int(center_x - dynamic_cell_width*0.9)
-
-                    new_box = (new_x, y1, int(dynamic_cell_width)*0.9, max_cell_height_threshold)
-                    new_boxes_in_gap.append(new_box)
-                
-                    # if len(new_boxes) + len(new_boxes_in_gap) >= max_columns:
-                    #     break
-
-                new_boxes[i + 1:i + 1] = new_boxes_in_gap
-
-        new_boxes = new_boxes[:max_columns]
-
-        updated_contours = [
-            np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype=np.int32)
-            for x, y, w, h in new_boxes
-        ]
-        updated_rows.append(updated_contours)
-
-    return updated_rows
-
-def sort_columns_to_rows(sorted_columns, max_rows):
-    
-    # Step 1: Extract **top edge y-coordinates** for clustering
-    top_edges = np.array([cv2.boundingRect(c)[1] for col in sorted_columns for c in col]).reshape(-1, 1)
-    # print(top_edges)
-    # Step 2: Perform K-Means clustering on top edges
-    # if max_rows is None:
-    #     max_rows = get_max_rows_from_filename(filename)
-    kmeans = KMeans(n_clusters=min(max_rows, len(top_edges)), random_state=0, n_init=50, tol=1e-2)
-    kmeans.fit(top_edges)
-    labels = kmeans.labels_
-
-    #get contours from sorted columns
-    contours = [c for col in sorted_columns for c in col if c is not None]
-
-    # Step 3: Assign contours to rows based on clustering
-    row_dict = {i: [] for i in range(max_rows)}
-    for label, contour in zip(labels, contours):
-        row_dict[label].append(contour)
-
-    # Step 4: Compute **super strict row medians** using only the closest 50%
-    row_medians = {}
-
-    for i, row in row_dict.items():
-        if len(row) > 2:
-            y_tops = np.array([cv2.boundingRect(c)[1] for c in row])
-            y_tops.sort()
-
-            # Keep **only the middle 50% closest values**
-            trimmed_y_tops = y_tops[len(y_tops) // 4 : 3 * len(y_tops) // 4]
-
-            # Compute median of the **trimmed** values
-            row_medians[i] = np.median(trimmed_y_tops)
-        else:
-            row_medians[i] = np.median([cv2.boundingRect(c)[1] for c in row])
-
-    # Step 5: Move misplaced boxes to the best row
-    adjusted_rows = {i: [] for i in range(max_rows)}
-
-    for i, row in row_dict.items():
-        for box in row:
-            y_top = cv2.boundingRect(box)[1]  # **Top edge y-coordinate**
-            
-            # Find closest **trusted** row median (ignoring outliers)
-            closest_row = i
-            min_distance = abs(y_top - row_medians[i])
-
-            if i > 0:  # Check row above
-                distance_up = abs(y_top - row_medians[i-1])
-                if distance_up < min_distance:
-                    min_distance = distance_up
-                    closest_row = i-1
-
-            if i < max_rows - 1:  # Check row below
-                distance_down = abs(y_top - row_medians[i+1])
-                if distance_down < min_distance:
-                    closest_row = i+1
-
-            adjusted_rows[closest_row].append(box)
-
-    # Step 6: Sort each adjusted row again (left to right)
-    for i in range(len(adjusted_rows)):
-        adjusted_rows[i] = sorted(adjusted_rows[i], key=lambda c: cv2.boundingRect(c)[0])
-
-    # Convert to final sorted list
-    sorted_rows = [adjusted_rows[i] for i in range(max_rows)]
-
-    return sorted_rows
 
 def organize_contours_top(contours, filename, max_rows=None):
     """
@@ -612,7 +379,7 @@ def transcription(
                     if not train:
                         if ocr_model == 'Tesseract-OCR':
                         # Using Tesseract-OCR
-                            ocr_result = pytesseract.image_to_string(save_path_detected_text, lang='cobecore_finetuned', config='--oem 1 --psm 7 -c tessedit_char_whitelist=0123456789') # Just added -c tessedit_char_whitelist=0123456789 to really limit the text type/values detected
+                            ocr_result = pytesseract.image_to_string(save_path_detected_text, lang='curacao_finetuned_filtered_best', config='--oem 1 --psm 7 -c tessedit_char_whitelist=0123456789') # Just added -c tessedit_char_whitelist=0123456789 to really limit the text type/values detected
 
                             # Here's a brief explanation of some Page Segmentation Modes (PSMs) available in Tesseract:
                             # 0: Orientation and script detection (OSD) only.
@@ -783,6 +550,7 @@ def transcription(
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         wb.save(file_path)
         results.append([file_path])
+        logger.info(f'Saved OCR results to {file_path}')
 
         roi_zip.close()  
         wb.close()
