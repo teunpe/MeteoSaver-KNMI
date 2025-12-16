@@ -3,7 +3,7 @@ import os, argparse, glob, tempfile, shutil, warnings
 import cv2
 import matplotlib.pyplot as plt
 
-def image_preprocessing(image_path):
+def image_preprocessing(image_path: str):
     '''
     Performs image pre-processing by converting a colored image to grayscale and binarizing it by applying adaptive thresholding.
 
@@ -37,9 +37,9 @@ def image_preprocessing(image_path):
     #  The method calculates the threshold for small regions (91x91 block size) 
     # of the image using the mean of pixel intensities within that region. The threshold is then adjusted by subtracting 6. 
     # Pixels above the threshold are set to 255 (white), and those below are set to 0 (black).
-    binarized_image = cv2.adaptiveThreshold(image_in_grayscale, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 91,6)
-    
+    binarized_image = cv2.adaptiveThreshold(image_in_grayscale, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 51,6)   # ahd it at (51,6) before   (35,6) was good but make some light text disappear. 
 
+   
     ## ONLY FOR VISUALIZATION PURPOSES - UNCOMMENT THE LINES BELOW 
     ## Plotting the grayscale images
     # plt.imshow(image_in_grayscale, cmap='gray')
@@ -54,6 +54,7 @@ def image_preprocessing(image_path):
     # plt.axis('off')
     # # Show the plot
     # plt.show()
+
 
     return image_in_grayscale, binarized_image, original_image
 

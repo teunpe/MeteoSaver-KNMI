@@ -3,8 +3,20 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+saved_detections/
+
 # C extensions
 *.so
+
+data/
+*.ini
+*.txt
+*.in
+*.png
+*.jpg
+*.Identifier
+.gitignore
+results
 
 # Distribution / packaging
 .Python

@@ -8,6 +8,9 @@ from openpyxl.styles import Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 import pandas as pd
 from statistics import mean
+import re
+import numpy as np
+import zipfile
 
 # Setting up the current working directory; for both the input and output folders
 cwd = os.getcwd()
@@ -41,6 +44,31 @@ def is_string_convertible_to_float(value):
     except ValueError:
         return False
 
+
+def clean_numeric_string(value):
+    """
+    Cleans a transcribed numeric value by removing spaces, tabs, and newlines.
+
+    This function ensures that the output is a properly formatted number string.
+
+    Parameters
+    ----------
+    value : Any
+        The value to clean.
+    
+    Returns
+    -------
+    str
+        A cleaned string of transcribed values without spaces, tabs or new lines.
+        Returns an empty string if the input is not convertible.
+    """
+    if value is None:
+        return ""
+
+    # Convert to string, remove spaces, tabs, and newlines
+    cleaned_value = str(value).strip().replace("\n", "").replace("\t", "").replace(" ", "")
+
+    return cleaned_value
 
 
 
@@ -172,8 +200,27 @@ def save_intermediate_version(workbook, stage, transient_transcription_output_di
     intermediate_file = os.path.join(transient_transcription_output_dir_station, f'{month_filename}_stage_{stage}.xlsx')
     workbook.save(intermediate_file)
 
+
+
+def correct_80s_misreads(value):
+    """
+    If a value is in the 80s (80-89 range), replace the leading '8' with '3'.
+    Works for both integers and decimals.
+    """
+    if isinstance(value, (int, float)):  # If it's a number, convert to string for checking
+        value_str = str(value)
+        if re.match(r"^8\d(\.\d+)?$", value_str):  # Match 80-89, including decimals
+            corrected_value = "3" + value_str[1:]  # Replace the '8' with '3'
+            return float(corrected_value)  # Convert back to float
+    elif isinstance(value, str) and re.match(r"^8\d(\.\d+)?$", value.strip()):  
+        return float("3" + value.strip()[1:])  # Ensure it converts to float after fixing
+    return value  # Return original if no correction needed
+
+def calculate_U(ea, delta_e):
+    # Calculate relative humidity using the provided formula
+    return (ea / (delta_e + ea)) * 100 if (delta_e + ea) != 0 else 0
     
-def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_QA_QC_transcribed_hydroclimate_data_dir_station, month_filename, max_temperature_threshold, min_temperature_threshold, decimal_places, uncertainty_margin, header_rows, multi_day_totals, multi_day_averages, max_days_for_multi_day_total, multi_day_totals_rows, final_totals_rows, excluded_rows, excluded_columns, columns_to_check, columns_to_check_with_extra_variable):
+def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_QA_QC_transcribed_hydroclimate_data_dir_station, month_filename, max_temperature_threshold, min_temperature_threshold, decimal_places, uncertainty_margin, header_rows, multi_day_totals, multi_day_averages, max_days_for_multi_day_total, multi_day_totals_rows, final_totals_rows, excluded_rows, excluded_columns, daily_temperature_columns, daily_temperature_columns_and_diurnal_temperature_range, daily_precipitation_column, dry_and_wet_bulb_temperature_columns):
     '''
     Performs Quality Assessment and Quality Control (QA/QC) checks on transcribed hydroclimatic data.
 
@@ -285,6 +332,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     # Note: we ignored the decimal points in the transcription module to reduce the noise in the transcripbed values since the sheets have dotted lines that would be recoognized by the OCR/HTR model as multiple decimal points.
     for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row, min_col=3, max_col=new_worksheet.max_column-1): # For columns: avoid the first two columns and the last column (2nd with Date, and last also with the Date)
         for cell in row:
+            cell.value = clean_numeric_string(cell.value)
             if is_string_convertible_to_float(cell.value): # Checking if the value transcribed in the cell is convertible to a float to avoid strings 
                 cell.value = (float(cell.value))/(10**decimal_places) # This is set up in the configuration file.Here we had one decimal place through the entire sheet, so  we divide the cell value by 10
     new_workbook.save(new_version_of_file) # Save the modified workbook
@@ -301,7 +349,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
 
     for current_index, row in enumerate(rows_to_process):
 
-        for column in columns_to_check: # Where these columns to check represent [ Max Temperature, Min Temperature, Average Temperature] 
+        for column in daily_temperature_columns + daily_precipitation_column + dry_and_wet_bulb_temperature_columns: # Where these columns to check represent [ Max Temperature, Min Temperature, Average Temperature] 
             # Get the value of the multi day total (in our case '5/6-day Total') that was transcribed. Note Months with 31 days ahve some 6 day todays considering 26th to 31st
             
             # Get the value of the multi-day total for the current row
@@ -343,12 +391,13 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
                 else:
                     if is_string_convertible_to_float(cell_value):
                         cell_value = float(cell_value)
-                        if cell_value >= 100.0: 
-                            manipulated_value = cell_value/10.0 # Special manipulation. If transcribed temperature value > 100, divide by 10.
-                            cell_value = manipulated_value
-                            highlight_change('CC3300', cell_coordinate, new_version_of_file) #CC3300 is Dark Red. Highlight to show that this special manupilation was done on this cell.
-                        if cell_value < min_temperature_threshold or cell_value > max_temperature_threshold:
-                            highlight_change('CC3300', cell_coordinate, new_version_of_file) #CC3300 is Dark Red. Highlight to show that temperature exceeds set thresholds for maximum or minimum 
+                        if column in daily_temperature_columns + dry_and_wet_bulb_temperature_columns:
+                            if cell_value >= 100.0: 
+                                manipulated_value = cell_value/10.0 # Special manipulation. If transcribed temperature value > 100, divide by 10.
+                                cell_value = manipulated_value
+                                highlight_change('CC3300', cell_coordinate, new_version_of_file) #CC3300 is Dark Red. Highlight to show that this special manupilation was done on this cell.
+                            if cell_value < min_temperature_threshold or cell_value > max_temperature_threshold:
+                                highlight_change('CC3300', cell_coordinate, new_version_of_file) #CC3300 is Dark Red. Highlight to show that temperature exceeds set thresholds for maximum or minimum 
                         cell_values_for_days.append(cell_value)
                         cell_coordinate.value = cell_value
                         new_workbook.save(new_version_of_file)
@@ -371,7 +420,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
                 highlight_change('75696F', cell_for_total, new_version_of_file)  #75696F is Grey. Highlight to show that transcribed multi-day total values are not equal to the transcribed daily values, and hence we cant confirm if the transcription was correct.
                 new_workbook.save(new_version_of_file)
             
-            if multi_day_averages:
+            if multi_day_averages and column in daily_temperature_columns + dry_and_wet_bulb_temperature_columns:
                 cell_for_average = new_worksheet[f"{column}{row + 1}"]
                 average_value = cell_for_average.value
 
@@ -408,7 +457,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     # We check the cells by rows, and manipulate where necessary
     
     # First, Convert column letters to numbers
-    columns_to_check_indices = [openpyxl.utils.column_index_from_string(col) for col in columns_to_check]
+    columns_to_check_indices = [openpyxl.utils.column_index_from_string(col) for col in daily_temperature_columns]
 
     # Get min_col and max_col from the columns_to_check
     min_col = min(columns_to_check_indices)
@@ -417,7 +466,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row, min_col=min_col, max_col=max_col):     
             
         # Create a dictionary to map column names (D, E, F, etc.) to the cell values
-        row_cells = {columns_to_check[i]: row[columns_to_check_indices[i] - min_col] for i in range(len(columns_to_check))}
+        row_cells = {daily_temperature_columns[i]: row[columns_to_check_indices[i] - min_col] for i in range(len(daily_temperature_columns))}
 
         # Now you can access the cells dynamically using the column names
         D = row_cells.get('D')  # Max Temp
@@ -629,6 +678,55 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     save_intermediate_version(new_workbook, "daily_max_min_avg_temp", transient_transcription_output_dir_station, month_filename)
     
 
+    # Check the cells by rows to ensure that Min temp threshold < Temp < Max Temp threshold
+    for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row, min_col=min_col, max_col=max_col):
+        if row[0].row in excluded_rows:
+            continue 
+        
+        # Create a dictionary to map column names (D, E, F, etc.) to the cell values
+        row_cells = {daily_temperature_columns[i]: row[columns_to_check_indices[i] - min_col] for i in range(len(daily_temperature_columns))}
+
+        # Now you can access the cells dynamically using the column names
+        D = row_cells.get('D')  # Max Temp
+        E = row_cells.get('E')  # Min Temp
+        F = row_cells.get('F')  # Average Temp
+
+        # Check if the highlighted cells have values
+        D_value_exists = is_string_convertible_to_float(D.value)
+        E_value_exists = is_string_convertible_to_float(E.value)
+        F_value_exists = is_string_convertible_to_float(F.value)
+
+        if D_value_exists:
+            corrected_D_value = correct_80s_misreads(D.value)
+            D.value = corrected_D_value  # Update cell value if corrected
+            D_value = float(D.value)
+            if not (min_temperature_threshold <= D_value <= max_temperature_threshold): 
+                highlight_change('CC3300', D, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+
+        if E_value_exists:
+            corrected_E_value = correct_80s_misreads(E.value)
+            E.value = corrected_E_value  # Update cell value if corrected
+            E_value = float(E.value)
+            if not (min_temperature_threshold <= E_value <= max_temperature_threshold):
+                highlight_change('CC3300', E, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+        
+        if F_value_exists:
+            corrected_F_value = correct_80s_misreads(F.value)
+            F.value = corrected_F_value  # Update cell value if corrected
+            F_value = float(F.value)
+            if not (min_temperature_threshold <= F_value <= max_temperature_threshold):
+                highlight_change('CC3300', F, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+
+    # Save the workbook after all changes
+    new_workbook.save(new_version_of_file)
+    # Save intermediate version after rechecking the temperature thresholds for the transcribed daily values of maximum, minimum amd average.
+    save_intermediate_version(new_workbook, "correct_values", transient_transcription_output_dir_station, month_filename)
+    
+
+
+
+
+
     # Check of Max, Min and Avg Temperatures using the Amplitude (Ampl.) commonly known as the Diurnal Temperarure Range. This is column G of our worksheets
     # where: Ampl. = Max - Min ..................... (1)
     #        Ampl. = 2Avg - 2Min ................... (2)
@@ -637,7 +735,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
 
     #Adding the extra variable column i.e. Ampl. (Diurnal Temperature Range)
     # First, Convert column letters to numbers
-    columns_to_check_indices_with_extra_variable = [openpyxl.utils.column_index_from_string(col) for col in columns_to_check_with_extra_variable]
+    columns_to_check_indices_with_extra_variable = [openpyxl.utils.column_index_from_string(col) for col in daily_temperature_columns_and_diurnal_temperature_range]
 
     # Get min_col and max_col from the columns_to_check
     min_col_with_extra_variable = min(columns_to_check_indices_with_extra_variable)
@@ -646,7 +744,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row, min_col=min_col_with_extra_variable, max_col=max_col_with_extra_variable):    
             
         # Create a dictionary to map column names (D, E, F, etc.) to the cell values
-        row_cells = {columns_to_check_with_extra_variable[i]: row[columns_to_check_indices_with_extra_variable[i] - min_col] for i in range(len(columns_to_check_with_extra_variable))}
+        row_cells = {daily_temperature_columns_and_diurnal_temperature_range[i]: row[columns_to_check_indices_with_extra_variable[i] - min_col] for i in range(len(daily_temperature_columns_and_diurnal_temperature_range))}
 
         # Now you can access the cells dynamically using the column names
         D = row_cells.get('D')  # Max Temp
@@ -734,7 +832,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
             continue 
         
         # Create a dictionary to map column names (D, E, F, etc.) to the cell values
-        row_cells = {columns_to_check[i]: row[columns_to_check_indices[i] - min_col] for i in range(len(columns_to_check))}
+        row_cells = {daily_temperature_columns[i]: row[columns_to_check_indices[i] - min_col] for i in range(len(daily_temperature_columns))}
 
         # Now you can access the cells dynamically using the column names
         D = row_cells.get('D')  # Max Temp
@@ -747,16 +845,22 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
         F_value_exists = is_string_convertible_to_float(F.value)
 
         if D_value_exists:
+            corrected_D_value = correct_80s_misreads(D.value)
+            D.value = corrected_D_value  # Update cell value if corrected
             D_value = float(D.value)
             if not (min_temperature_threshold <= D_value <= max_temperature_threshold): 
                 highlight_change('CC3300', D, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
 
         if E_value_exists:
+            corrected_E_value = correct_80s_misreads(E.value)
+            E.value = corrected_E_value  # Update cell value if corrected
             E_value = float(E.value)
             if not (min_temperature_threshold <= E_value <= max_temperature_threshold):
                 highlight_change('CC3300', E, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
         
         if F_value_exists:
+            corrected_F_value = correct_80s_misreads(F.value)
+            F.value = corrected_F_value  # Update cell value if corrected
             F_value = float(F.value)
             if not (min_temperature_threshold <= F_value <= max_temperature_threshold):
                 highlight_change('CC3300', F, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
@@ -764,16 +868,196 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     # Save the workbook after all changes
     new_workbook.save(new_version_of_file)
     # Save intermediate version after rechecking the temperature thresholds for the transcribed daily values of maximum, minimum amd average.
-    save_intermediate_version(new_workbook, "recheck_temp_thresholds", transient_transcription_output_dir_station, month_filename)
+    save_intermediate_version(new_workbook, "recheckthresh", transient_transcription_output_dir_station, month_filename)
     
 
+    ## Additional checks for Dry bulb temperature (T), Wet bulb temperature (T'a), Actual Vapour pressure (e), Relative Humidity (U), and delta e 
+    # Iterate over each row in the worksheet after header rows
+    for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row):
+        if row[0].row in excluded_rows:
+            continue 
+        
+        for i in range(0, len(dry_and_wet_bulb_temperature_columns), 2):
+            dry_col = dry_and_wet_bulb_temperature_columns[i]
+            wet_col = dry_and_wet_bulb_temperature_columns[i+1]
+
+            ea_col = openpyxl.utils.column_index_from_string(wet_col) + 1
+            U_col = ea_col + 1
+            delta_e_col = U_col + 1
+
+            dry_cell = row[openpyxl.utils.column_index_from_string(dry_col) - 1]
+            wet_cell = row[openpyxl.utils.column_index_from_string(wet_col) - 1]
+            ea_cell = row[ea_col - 1]
+            U_cell = row[U_col - 1]
+            delta_e_cell = row[delta_e_col - 1]
+
+            if all(is_string_convertible_to_float(cell.value) for cell in [dry_cell, wet_cell, ea_cell, U_cell, delta_e_cell]):
+                T = float(dry_cell.value)
+                Ta = float(wet_cell.value)
+                ea = float(ea_cell.value)
+                delta_e = float(delta_e_cell.value)
+                U = float(U_cell.value)
+                calculated_U = calculate_U(ea, delta_e)
+                
+                # print("the U is: ")
+                # print(U)
+                # print("the calculated U is: ")
+                # print(calculated_U)
+                # print("Checking if the Actual Vapour pressure (e), Relative Humidity (U), and delta e calculation is accurate")
+                # Update U_cell if different from calculated
+                if np.isclose(U, calculated_U, atol=uncertainty_margin):
+                    # print("The Actual Vapour pressure (e), Relative Humidity (U), and delta e calculation is accurate")
+                    highlight_change('FF6DCD57', U_cell, new_version_of_file)  # Confirmed value. Highlight in green
+                    highlight_change('FF6DCD57', ea_cell, new_version_of_file) # Confirmed value. Highlight in green
+                    highlight_change('FF6DCD57', delta_e_cell, new_version_of_file)    # Confirmed value. Highlight in green
+
+                # Temperature adjustments based on confirmed ea and delta_e
+                if all(is_highlighted(cell, 'FF6DCD57') for cell in [ea_cell, U_cell, delta_e_cell]):
+                    expected_es = ea + delta_e
+                    # Reverse the es calculation to find T
+                    calculated_T = (243.5 * np.log(expected_es / 6.112)) / (17.67 - np.log(expected_es / 6.112))
+
+                    if np.abs(calculated_T - T) <= uncertainty_margin:
+                        highlight_change('FF6DCD57', dry_cell, new_version_of_file) # Confirmed value. Highlight in green
+                    else:
+                        dry_cell.value = round(calculated_T, decimal_places)
+                        highlight_change('FF6DCD57', dry_cell, new_version_of_file) # Confirmed value. Highlight in green
+
+
+                    # Also check T'a and confirm or correct
+                    # Reverse the ea calculation to find T
+                    calculated_Ta = (243.5 * np.log(ea / 6.112)) / (17.67 - np.log(ea / 6.112))
+
+                    if np.abs(calculated_Ta - Ta) <= uncertainty_margin:
+                        highlight_change('FF6DCD57', wet_cell, new_version_of_file) # Confirmed value. Highlight in green
+                    else:
+                        wet_cell.value = round(calculated_Ta, decimal_places)
+                        highlight_change('FF6DCD57', wet_cell, new_version_of_file) # Confirmed value. Highlight in green
+                
+            # If both T (dry) and T'a (wet) are confirmed, calculate ea, delta_e, and U
+            if all(is_highlighted(cell, 'FF6DCD57') for cell in [dry_cell, wet_cell]) and all(is_string_convertible_to_float(cell.value) for cell in [dry_cell, wet_cell]):
+
+                T = float(dry_cell.value)
+                Ta = float(wet_cell.value)
+
+                if T >= Ta and (not is_highlighted(ea_cell, 'FF6DCD57') or not is_highlighted(delta_e_cell, 'FF6DCD57') or not is_highlighted(U_cell, 'FF6DCD57')):
+                    # Calculate actual vapour pressure (ea) from Ta (wet bulb)
+                    calculated_ea = 6.112 * np.exp((17.67 * Ta) / (Ta + 243.5))
+                    # Update and highlight
+                    ea_cell.value = round(calculated_ea, decimal_places)
+                    highlight_change('FF6DCD57', ea_cell, new_version_of_file) # Confirmed value. Highlight in green
+
+                
+                    # Calculate saturation vapour pressure from T (dry bulb)
+                    es = 6.112 * np.exp((17.67 * T) / (T + 243.5))
+
+                    # delta_e = es - ea
+                    calculated_delta_e = es - calculated_ea
+
+                    # U = ea / delta_e
+                    calculated_U = calculate_U(calculated_ea, calculated_delta_e)
+
+                    # Update and highlight
+                    delta_e_cell.value = round(calculated_delta_e, decimal_places)
+                    U_cell.value = round(calculated_U, decimal_places)
+
+                    highlight_change('FF6DCD57', delta_e_cell, new_version_of_file) # Confirmed value. Highlight in green
+                    highlight_change('FF6DCD57', U_cell, new_version_of_file) # Confirmed value. Highlight in green
+
+            
+            # If T is confirmed (green) while T'a is not confirmed and Δe is present and numeric, try calculating ea and validating T'a
+            if is_highlighted(dry_cell, 'FF6DCD57') and not is_highlighted(wet_cell, 'FF6DCD57') and is_string_convertible_to_float(dry_cell.value) and is_string_convertible_to_float(delta_e_cell.value):
+                T = float(dry_cell.value)
+                delta_e = float(delta_e_cell.value)
+
+                # Calculate saturation vapour pressure (es) from T
+                es = 6.112 * np.exp((17.67 * T) / (T + 243.5))
+
+                # Calculate ea = es - delta_e
+                calculated_ea = es - delta_e
+
+                # Now calculate T'a from ea
+                #calculated_Ta = (243.5 * np.log(calculated_ea / 6.112)) / (17.67 - np.log(calculated_ea / 6.112))
+                ratio = calculated_ea / 6.112
+                if ratio > 0:
+                    calculated_Ta = (243.5 * np.log(ratio)) / (17.67 - np.log(ratio))
+
+                    if is_string_convertible_to_float(wet_cell.value):
+                        Ta = float(wet_cell.value)
+                        if np.abs(calculated_Ta - Ta) <= uncertainty_margin:
+                            # All checks confirmed: update ea and U
+                            ea_cell.value = round(calculated_ea, decimal_places)
+                            highlight_change('FF6DCD57', ea_cell, new_version_of_file)
+                            highlight_change('FF6DCD57', wet_cell, new_version_of_file)
+                            highlight_change('FF6DCD57', dry_cell, new_version_of_file)
+                            highlight_change('FF6DCD57', delta_e_cell, new_version_of_file)
+
+                            # Calculate U from ea and delta_e
+                            calculated_U = calculate_U(calculated_ea, delta_e)
+                            U_cell.value = round(calculated_U, decimal_places)
+                            highlight_change('FF6DCD57', U_cell, new_version_of_file)
+
+            # If T'a is confirmed (green) but T is not, attempt to confirm ea, Δe, U, and T
+            if is_highlighted(wet_cell, 'FF6DCD57') and not is_highlighted(dry_cell, 'FF6DCD57'):
+
+                if is_string_convertible_to_float(wet_cell.value) and is_string_convertible_to_float(ea_cell.value) and is_string_convertible_to_float(dry_cell.value):
+                    Ta = float(wet_cell.value)
+                    T = float(dry_cell.value)
+                    transcribed_ea = float(ea_cell.value)
+
+                    # Step 1: Calculate ea from T'a
+                    calculated_ea = 6.112 * np.exp((17.67 * Ta) / (Ta + 243.5))
+
+                    if np.abs(calculated_ea - transcribed_ea) <= uncertainty_margin:
+                        # Confirm ea
+                        highlight_change('FF6DCD57', ea_cell, new_version_of_file)
+
+                        # Step 2: Calculate es from T (dry bulb)
+                        es = 6.112 * np.exp((17.67 * T) / (T + 243.5))
+
+                        # Step 3: Compute Δe and U
+                        calculated_delta_e = es - transcribed_ea
+                        calculated_U = calculate_U(transcribed_ea, calculated_delta_e)
+
+                        # Step 4: Compare with transcribed Δe and U
+                        delta_e_ok = False
+                        U_ok = False
+
+                        if is_string_convertible_to_float(delta_e_cell.value):
+                            transcribed_delta_e = float(delta_e_cell.value)
+                            if np.abs(calculated_delta_e - transcribed_delta_e) <= uncertainty_margin:
+                                highlight_change('FF6DCD57', delta_e_cell, new_version_of_file)
+                                delta_e_ok = True
+
+                        if is_string_convertible_to_float(U_cell.value):
+                            transcribed_U = float(U_cell.value)
+                            if np.abs(calculated_U - transcribed_U) <= uncertainty_margin:
+                                highlight_change('FF6DCD57', U_cell, new_version_of_file)
+                                U_ok = True
+
+                        # Step 5: If either Δe or U matched, update/correct the other and confirm T
+                        if delta_e_ok or U_ok:
+                            if not delta_e_ok:
+                                delta_e_cell.value = round(calculated_delta_e, decimal_places)
+                                highlight_change('FF6DCD57', delta_e_cell, new_version_of_file)
+
+                            if not U_ok:
+                                U_cell.value = round(calculated_U, decimal_places)
+                                highlight_change('FF6DCD57', U_cell, new_version_of_file)
+
+                            # Now confirm T as correct
+                            highlight_change('FF6DCD57', dry_cell, new_version_of_file)
+    
+    new_workbook.save(new_version_of_file)
+    # Save intermediate version after rechecking the temperature thresholds for the transcribed daily values of maximum, minimum amd average.
+    save_intermediate_version(new_workbook, "dryandwetbulb", transient_transcription_output_dir_station, month_filename)
 
     # RECALCULATIONS             
     # RECALCULATION (1)
     # New logic to recalculate multi-day totals and averages if values of all the days leading up to it are confirmed in previous QA/QC steps (highlighted green)
     for current_index, row in enumerate(rows_to_process):
 
-        for column in columns_to_check: # Where these columns to check represent [ Max Temperature, Min Temperature, Average Temperature] 
+        for column in daily_temperature_columns + daily_precipitation_column + dry_and_wet_bulb_temperature_columns: # Where these columns to check represent [ Max Temperature, Min Temperature, Average Temperature] 
 
             # Dynamically determine the number of offset cells (days considered in calculation of multi-day totals) based on row gaps, header rows, and presence of multi-day averages (placed immediatelly after the totals)
             if current_index == 0:
@@ -802,37 +1086,39 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
             cell_for_total = new_worksheet[f"{column}{row}"]
             confirmed_cell_for_total = is_highlighted(cell_for_total, 'FF6DCD57') # Check whether the multi-day total was confirmed (green)
 
-            if multi_day_averages:
+            if multi_day_averages and column in daily_temperature_columns + dry_and_wet_bulb_temperature_columns:
                 cell_for_average = new_worksheet[f"{column}{row + 1}"]
                 confirmed_cell_for_average = is_highlighted(cell_for_average, 'FF6DCD57')  # Check if multi-day average was confirmed (green)
 
             else:
                 confirmed_cell_for_average = False
             
-            # Recalculate multi-day total and average
+            # Recalculate unconfirmed days if multi-day total and averages are confirmed
             if confirmed_cell_for_total or confirmed_cell_for_average:
                 # If either the multi-day total or average is confirmed, use it to correct the missing values
 
                 valid_day_values = [float(day.value) for day in days if day.value is not None and is_string_convertible_to_float(day.value) and is_highlighted(day, 'FF6DCD57')]  # Get valid (confirmed) day values
                 
                 if len(valid_day_values) == len(days) - 1:  # If only one day is unconfirmed
-                    non_confirmed_day = next(day for day in days if not is_highlighted(day, 'FF6DCD57'))  # Identify the unconfirmed day
+                    non_confirmed_day = next((day for day in days if not is_highlighted(day, 'FF6DCD57')), None)  # Identify the unconfirmed day
                     # Use confirmed total to calculate the missing day
-                    if confirmed_cell_for_total and is_string_convertible_to_float(cell_for_total.value):
+                    if confirmed_cell_for_total and is_string_convertible_to_float(cell_for_total.value) and non_confirmed_day is not None:
                         total_value = float(cell_for_total.value)
                         non_confirmed_day_value = total_value - sum(valid_day_values)
-                        non_confirmed_day.value = round(non_confirmed_day_value, 1)
-                        highlight_change('FF6DCD57', non_confirmed_day, new_version_of_file)  # Mark the corrected day in green (now confirmed)
-                        new_workbook.save(new_version_of_file)
+                        if (min_temperature_threshold <= non_confirmed_day_value <= max_temperature_threshold): 
+                            non_confirmed_day.value = round(non_confirmed_day_value, 1)
+                            highlight_change('FF6DCD57', non_confirmed_day, new_version_of_file)  # Mark the corrected day in green (now confirmed)
+                            new_workbook.save(new_version_of_file)
                     
                     # Use confirmed average to calculate the missing day
-                    elif confirmed_cell_for_average and is_string_convertible_to_float(cell_for_average.value):
+                    elif confirmed_cell_for_average and is_string_convertible_to_float(cell_for_average.value) and non_confirmed_day is not None:
                         average_value = float(cell_for_average.value)
                         total_value_from_average = average_value * len(days)
                         non_confirmed_day_value = total_value_from_average - sum(valid_day_values)
-                        non_confirmed_day.value = round(non_confirmed_day_value, 1)
-                        highlight_change('FF6DCD57', non_confirmed_day, new_version_of_file)  # Mark the corrected day in green
-                        new_workbook.save(new_version_of_file)
+                        if (min_temperature_threshold <= non_confirmed_day_value <= max_temperature_threshold):
+                            non_confirmed_day.value = round(non_confirmed_day_value, 1)
+                            highlight_change('FF6DCD57', non_confirmed_day, new_version_of_file)  # Mark the corrected day in green
+                            new_workbook.save(new_version_of_file)
 
             # Recalculate multi-day total if all days are confirmed
             if all(is_highlighted(day, 'FF6DCD57') for day in days) and not confirmed_cell_for_total:
@@ -842,7 +1128,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
                 new_workbook.save(new_version_of_file)
 
             # Recalculate multi-day average if all days are confirmed
-            if multi_day_averages and all(is_highlighted(day, 'FF6DCD57') for day in days) and not confirmed_cell_for_average:
+            if multi_day_averages and column in daily_temperature_columns + dry_and_wet_bulb_temperature_columns and all(is_highlighted(day, 'FF6DCD57') for day in days) and not confirmed_cell_for_average:
                 average_value = mean(float(day.value) for day in days if day.value is not None and is_string_convertible_to_float(day.value))
                 cell_for_average.value = round(average_value, 1)
                 highlight_change('FF6DCD57', cell_for_average, new_version_of_file)  # Highlight average in green
@@ -852,14 +1138,14 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     # Save the workbook after all changes
     new_workbook.save(new_version_of_file)
     # Save intermediate version after recalculating the multi-day totals and averages after confirmation of more daily values
-    save_intermediate_version(new_workbook, "recalc_multi_day_tot_and_avgs", transient_transcription_output_dir_station, month_filename)
+    save_intermediate_version(new_workbook, "recalcmultiday", transient_transcription_output_dir_station, month_filename)
     
 
     # RECALCULATION (2)
     # Here we re-do all the multi-day total and average checks, after the previous QA/QC steps that corrected some previously wrongly transcribed values
     for current_index, row in enumerate(rows_to_process):
 
-        for column in columns_to_check: # Where these columns to check represent [ Max Temperature, Min Temperature, Average Temperature] 
+        for column in daily_temperature_columns + daily_precipitation_column + dry_and_wet_bulb_temperature_columns: # Where these columns to check represent [ Max Temperature, Min Temperature, Average Temperature] 
             # Get the value of the multi day total (in our case '5/6-day Total') that was transcribed. Note Months with 31 days ahve some 6 day todays considering 26th to 31st
             
             # Get the value of the multi-day total for the current row
@@ -907,12 +1193,13 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
                 else:
                     if is_string_convertible_to_float(cell_value):
                         cell_value = float(cell_value)
-                        if cell_value >= 100.0: 
-                            manipulated_value = cell_value/10.0 # Special manipulation. If transcribed temperature value > 100, divide by 10.
-                            cell_value = manipulated_value
-                            highlight_change('CC3300', cell_coordinate, new_version_of_file) #CC3300 is Dark Red. Highlight to show that this special manupilation was done on this cell.
-                        if cell_value < min_temperature_threshold or cell_value > max_temperature_threshold:
-                            highlight_change('CC3300', cell_coordinate, new_version_of_file) #CC3300 is Dark Red. Highlight to show that temperature exceeds set thresholds for maximum or minimum 
+                        if column in daily_temperature_columns + dry_and_wet_bulb_temperature_columns:
+                            if cell_value >= 100.0: 
+                                manipulated_value = cell_value/10.0 # Special manipulation. If transcribed temperature value > 100, divide by 10.
+                                cell_value = manipulated_value
+                                highlight_change('CC3300', cell_coordinate, new_version_of_file) #CC3300 is Dark Red. Highlight to show that this special manupilation was done on this cell.
+                            if cell_value < min_temperature_threshold or cell_value > max_temperature_threshold:
+                                highlight_change('CC3300', cell_coordinate, new_version_of_file) #CC3300 is Dark Red. Highlight to show that temperature exceeds set thresholds for maximum or minimum 
                         cell_values_for_days.append(cell_value)
                         cell_coordinate.value = cell_value
                         new_workbook.save(new_version_of_file)
@@ -934,7 +1221,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
                 highlight_change('75696F', cell_for_total, new_version_of_file)  #75696F is Grey. Highlight to show that transcribed multi-day total values are not equal to the transcribed daily values, and hence we cant confirm if the transcription was correct.
                 new_workbook.save(new_version_of_file)
             
-            if multi_day_averages:
+            if multi_day_averages and column in daily_temperature_columns + dry_and_wet_bulb_temperature_columns:
                 cell_for_average = new_worksheet[f"{column}{row + 1}"]
                 average_value = cell_for_average.value
                 confirmed_cell_for_average = is_highlighted(cell_for_average, 'FF6DCD57')  # Check if multi-day average was confirmed (green)
@@ -971,7 +1258,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
                 new_workbook.save(new_version_of_file)
 
             # Recalculate multi-day average if all days are confirmed
-            if multi_day_averages and all(is_highlighted(day, 'FF6DCD57') for day in days_considered) and not confirmed_cell_for_average:
+            if multi_day_averages and column in daily_temperature_columns + dry_and_wet_bulb_temperature_columns and all(is_highlighted(day, 'FF6DCD57') for day in days_considered) and not confirmed_cell_for_average:
                 average_value = mean(float(day.value) for day in days_considered if day.value is not None and is_string_convertible_to_float(day.value))
                 cell_for_average.value = round(average_value, 1)
                 highlight_change('FF6DCD57', cell_for_average, new_version_of_file)  # Highlight average in green
@@ -987,7 +1274,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
             continue 
         
         # Create a dictionary to map column names (D, E, F, etc.) to the cell values
-        row_cells = {columns_to_check[i]: row[columns_to_check_indices[i] - min_col] for i in range(len(columns_to_check))}
+        row_cells = {daily_temperature_columns[i]: row[columns_to_check_indices[i] - min_col] for i in range(len(daily_temperature_columns))}
 
         # Now you can access the cells dynamically using the column names
         D = row_cells.get('D')  # Max Temp
@@ -1017,7 +1304,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     # Save the workbook after all changes
     new_workbook.save(new_version_of_file)
     # Save intermediate version after rechecking the temperature thresholds for the transcribed daily values of maximum, minimum amd average.
-    save_intermediate_version(new_workbook, "2ndrecheck_temp_thresholds", transient_transcription_output_dir_station, month_filename)
+    save_intermediate_version(new_workbook, "2ndrechkthresh", transient_transcription_output_dir_station, month_filename)
 
 
     # Save the workbook after all changes
@@ -1027,7 +1314,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
     # Final recheck for totals and averages
     for current_index, row in enumerate(rows_to_process):
 
-        for column in columns_to_check: # Where these columns to check represent [ Max Temperature, Min Temperature, Average Temperature] 
+        for column in daily_temperature_columns + daily_precipitation_column + dry_and_wet_bulb_temperature_columns: # Where these columns to check represent [ Max Temperature, Min Temperature, Average Temperature] 
             # Get the value of the multi day total (in our case '5/6-day Total') that was transcribed. Note Months with 31 days ahve some 6 day todays considering 26th to 31st
             
             # Get the value of the multi-day total for the current row
@@ -1077,7 +1364,7 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
                 highlight_change('75696F', cell_for_total, new_version_of_file)  #75696F is Grey. Highlight to show that transcribed multi-day total values are not equal to the transcribed daily values, and hence we cant confirm if the transcription was correct.
                 new_workbook.save(new_version_of_file)
             
-            if multi_day_averages:
+            if multi_day_averages and column in daily_temperature_columns + dry_and_wet_bulb_temperature_columns:
                 cell_for_average = new_worksheet[f"{column}{row + 1}"]
                 average_value = cell_for_average.value
 
@@ -1102,6 +1389,95 @@ def qa_qc(transcribed_table, station, transient_transcription_output_dir, post_Q
                         highlight_change('75696F', cell_for_average, new_version_of_file)  # #75696F is Grey. Highlight to show that transcribed multi-day total average value is not equal to the transcribed daily values, and hence we cant confirm if the transcription was correct.
                         new_workbook.save(new_version_of_file)                
 
+
+    # Check the cells by rows to ensure that Min temp < Average Temp < Max Temp 
+    for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row, min_col=min_col, max_col=max_col):
+        if row[0].row in excluded_rows:
+            continue 
+        
+        # Create a dictionary to map column names (D, E, F, etc.) to the cell values
+        row_cells = {daily_temperature_columns[i]: row[columns_to_check_indices[i] - min_col] for i in range(len(daily_temperature_columns))}
+
+        # Now you can access the cells dynamically using the column names
+        D = row_cells.get('D')  # Max Temp
+        E = row_cells.get('E')  # Min Temp
+        F = row_cells.get('F')  # Average Temp
+
+        # Check if the highlighted cells have values
+        D_value_exists = is_string_convertible_to_float(D.value)
+        E_value_exists = is_string_convertible_to_float(E.value)
+        F_value_exists = is_string_convertible_to_float(F.value)
+
+        if D_value_exists and E_value_exists and F_value_exists:
+            D_value = float(D.value)
+            E_value = float(E.value)
+            F_value = float(F.value)
+            if not (E_value <= F_value):
+                highlight_change('CC3300', E, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+                highlight_change('CC3300', F, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+            if not (F_value <= D_value):
+                highlight_change('CC3300', D, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+                highlight_change('CC3300', F, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+
+
+    # Check the cells by rows to ensure that Min temp threshold < Temp < Max Temp threshold
+    for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row, min_col=min_col, max_col=max_col):
+        if row[0].row in excluded_rows:
+            continue 
+        
+        # Create a dictionary to map column names (D, E, F, etc.) to the cell values
+        row_cells = {daily_temperature_columns[i]: row[columns_to_check_indices[i] - min_col] for i in range(len(daily_temperature_columns))}
+
+        # Now you can access the cells dynamically using the column names
+        D = row_cells.get('D')  # Max Temp
+        E = row_cells.get('E')  # Min Temp
+        F = row_cells.get('F')  # Average Temp
+
+        # Check if the highlighted cells have values
+        D_value_exists = is_string_convertible_to_float(D.value)
+        E_value_exists = is_string_convertible_to_float(E.value)
+        F_value_exists = is_string_convertible_to_float(F.value)
+
+        if D_value_exists:
+            D_value = float(D.value)
+            if not (min_temperature_threshold <= D_value <= max_temperature_threshold): 
+                highlight_change('CC3300', D, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+
+        if E_value_exists:
+            E_value = float(E.value)
+            if not (min_temperature_threshold <= E_value <= max_temperature_threshold):
+                highlight_change('CC3300', E, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+        
+        if F_value_exists:
+            F_value = float(F.value)
+            if not (min_temperature_threshold <= F_value <= max_temperature_threshold):
+                highlight_change('CC3300', F, new_version_of_file)  # Dark Red. Highlight to show that transcribed temp value may not be correct
+
+    # Save the workbook after all changes
+    new_workbook.save(new_version_of_file)
+
+    # Save intermediate version after Last QA/QC check
+    save_intermediate_version(new_workbook, "lastcheck", transient_transcription_output_dir_station, month_filename)
+
+
+    # === FINAL STEP: Export confirmed green cells to text files === This will be important for further training (continous learning of handwritting styles) of the OCR
+    # Define zip path (same one used for clipped cell ROIs)
+    zip_path = os.path.join(transient_transcription_output_dir, station, f"{station}_clipped_cells.zip")
+    os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+
+    with zipfile.ZipFile(zip_path, 'a', compression=zipfile.ZIP_DEFLATED) as roi_zip:
+        for row in new_worksheet.iter_rows(min_row=header_rows+1, max_row=new_worksheet.max_row):
+            for cell in row:
+                if is_highlighted(cell, 'FF6DCD57') and is_string_convertible_to_float(cell.value):
+                    # Get Excel-style cell reference (e.g., D4)
+                    col_letter = openpyxl.utils.get_column_letter(cell.column)
+                    cell_ref = f"{col_letter}{cell.row}"
+                    clean_val = str(cell.value).replace('.', '')
+
+                    txt_filename = f"{month_filename}_{cell_ref}.txt"
+
+                    roi_zip.writestr(txt_filename, clean_val)
+    
     # Save final changes
     new_workbook.save(new_version_of_file)    
     new_workbook.close()
